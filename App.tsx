@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   ShieldCheck, 
   Fuel, 
@@ -6,9 +6,10 @@ import {
   BellRing,
   QrCode,
   Scan,
-  CheckCircle2,
   Clock,
-  AlertCircle
+  Camera,
+  CheckCircle2,
+  XCircle
 } from 'lucide-react';
 
 interface WholesaleOrder {
@@ -46,7 +47,8 @@ export default function App() {
   const [newShop, setNewShop] = useState('');
   const [newTotal, setNewTotal] = useState('');
   const [newDiscount, setNewDiscount] = useState('');
-  const [scanningId, setScanningId] = useState<string | null>(null);
+  const [scanningActive, setScanningActive] = useState(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   // Handle Order Submission
   const handleAddOrder = (e: React.FormEvent) => {
@@ -82,7 +84,31 @@ export default function App() {
     setNewDiscount('');
   };
 
-  // Simulate QR Bill Scanning & Status Update
+  // Start Real Camera for Scanning
+  const startCamera = async () => {
+    setScanningActive(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+    } catch (err) {
+      console.error("Camera access error:", err);
+      alert("⚠️ කැමරාව ක්‍රියාත්මක කර ගැනීමට අවසර නැත නැතහොත් කැමරාව භාවිතයේ ඇත.");
+      setScanningActive(false);
+    }
+  };
+
+  // Stop Camera
+  const stopCamera = () => {
+    setScanningActive(false);
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach(track => track.stop());
+    }
+  };
+
+  // Update Payment Status
   const updatePaymentStatus = (id: string, status: 'Unpaid' | 'Partially Paid' | 'Fully Paid', amountPaid: number) => {
     setOrders(orders.map(ord => {
       if (ord.id === id) {
@@ -90,7 +116,6 @@ export default function App() {
       }
       return ord;
     }));
-    setScanningId(null);
     alert(`✅ Bill ${id} status updated successfully to: ${status}`);
   };
 
@@ -129,7 +154,7 @@ export default function App() {
       {/* Navigation Tabs */}
       <div className="max-w-6xl mx-auto flex gap-3 mb-6 overflow-x-auto pb-2">
         <button
-          onClick={() => setActiveTab('orders')}
+          onClick={() => { stopCamera(); setActiveTab('orders'); }}
           className={`px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all ${
             activeTab === 'orders' ? 'bg-amber-500 text-slate-950 shadow-lg' : 'bg-slate-800 text-slate-300 border border-slate-700'
           }`}
@@ -137,7 +162,7 @@ export default function App() {
           <Wallet className="w-4 h-4" /> Orders & QR Invoices
         </button>
         <button
-          onClick={() => setActiveTab('credits')}
+          onClick={() => { stopCamera(); setActiveTab('credits'); }}
           className={`px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all ${
             activeTab === 'credits' ? 'bg-amber-500 text-slate-950 shadow-lg' : 'bg-slate-800 text-slate-300 border border-slate-700'
           }`}
@@ -150,7 +175,7 @@ export default function App() {
             activeTab === 'scanner' ? 'bg-amber-500 text-slate-950 shadow-lg' : 'bg-slate-800 text-slate-300 border border-slate-700'
           }`}
         >
-          <Scan className="w-4 h-4" /> QR / Camera Bill Scanner
+          <Scan className="w-4 h-4" /> Live Camera QR Scanner
         </button>
       </div>
 
@@ -272,15 +297,39 @@ export default function App() {
           )}
 
           {activeTab === 'scanner' && (
-            <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg text-center py-10">
-              <Scan className="w-16 h-16 text-amber-400 mx-auto mb-4 animate-pulse" />
-              <h2 className="text-xl font-bold text-amber-400 mb-2">QR Code & Camera Bill Scanner</h2>
+            <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg text-center py-8">
+              <Camera className="w-16 h-16 text-amber-400 mx-auto mb-4" />
+              <h2 className="text-xl font-bold text-amber-400 mb-2">Live Camera QR Bill Scanner</h2>
               <p className="text-sm text-slate-300 max-w-md mx-auto mb-6">
-                Use your phone camera to scan the printed QR invoice during morning dispatch or evening collection to instantly update bill statuses.
+                ඔබේ ජංගම දුරකථන කැමරාව සක්‍රීය කර බිල්පතේ ඇති QR කෝඩ් එක ස්කෑන් කරන්න.
               </p>
+
+              {!scanningActive ? (
+                <button
+                  onClick={startCamera}
+                  className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-6 py-3 rounded-xl shadow-lg transition-all flex items-center gap-2 mx-auto"
+                >
+                  <Scan className="w-5 h-5" /> Turn On Camera Scanner
+                </button>
+              ) : (
+                <div className="space-y-4">
+                  <div className="relative w-full max-w-sm mx-auto bg-black rounded-xl overflow-hidden border-2 border-amber-400 aspect-[3/4]">
+                    <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
+                    <div className="absolute inset-0 border-4 border-amber-400/30 flex items-center justify-center pointer-events-none">
+                      <div className="w-48 h-48 border-2 border-dashed border-amber-400 rounded-lg animate-pulse"></div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={stopCamera}
+                    className="bg-rose-600 hover:bg-rose-500 text-white font-bold px-6 py-2 rounded-xl text-sm transition-all"
+                  >
+                    Turn Off Camera
+                  </button>
+                </div>
+              )}
               
-              <div className="max-w-md mx-auto bg-slate-900 p-4 rounded-xl border border-slate-700 text-left space-y-3">
-                <p className="text-xs font-bold text-slate-400">Simulate Scanning a Bill:</p>
+              <div className="mt-8 max-w-md mx-auto bg-slate-900 p-4 rounded-xl border border-slate-700 text-left space-y-3">
+                <p className="text-xs font-bold text-slate-400">Quick Bill Status Actions (Manual Override):</p>
                 {orders.map(ord => (
                   <div key={ord.id} className="flex justify-between items-center bg-slate-800 p-3 rounded-lg">
                     <span className="text-xs font-mono text-amber-400">{ord.id} - {ord.shopName}</span>
@@ -329,8 +378,8 @@ export default function App() {
           </div>
 
           <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-700 text-center">
-            <p className="text-xs text-slate-400">QR & Credit Tracking System</p>
-            <p className="text-xs text-emerald-400 font-semibold mt-1">● Ready for Deployment</p>
+            <p className="text-xs text-slate-400">QR & Camera Scanner</p>
+            <p className="text-xs text-emerald-400 font-semibold mt-1">● Fully Integrated</p>
           </div>
         </div>
 
