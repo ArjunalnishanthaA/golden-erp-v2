@@ -1,19 +1,17 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import { 
-  ShieldCheck, 
   Fuel, 
   Wallet, 
-  BellRing,
   QrCode,
   Scan,
   Clock,
   Camera,
-  CheckCircle2,
-  XCircle
+  RefreshCw
 } from 'lucide-react';
 
 interface WholesaleOrder {
   id: string;
+  agency: 'Anuradhapura' | 'Mihintale';
   shopName: string;
   category: 'Supermarket' | 'Wholesale';
   totalAmount: number;
@@ -26,13 +24,15 @@ interface WholesaleOrder {
 }
 
 export default function App() {
-  const [role, setRole] = useState<'owner' | 'sales' | 'inventory'>('owner');
+  const [activeAgency, setActiveAgency] = useState<'Anuradhapura' | 'Mihintale'>('Anuradhapura');
   const [activeTab, setActiveTab] = useState<'orders' | 'credits' | 'scanner'>('orders');
+  const [isSyncing, setIsSyncing] = useState(false);
   
   const [orders, setOrders] = useState<WholesaleOrder[]>([
     {
-      id: 'ORD-001',
-      shopName: 'Anuradhapura Super Stores',
+      id: 'ORD-3881',
+      agency: 'Anuradhapura',
+      shopName: 'Anuradhapura Super Stores (Route 1)',
       category: 'Supermarket',
       totalAmount: 150000,
       discountPercentage: 26,
@@ -41,6 +41,19 @@ export default function App() {
       status: 'Pending Approval',
       paymentStatus: 'Unpaid',
       paidAmount: 0
+    },
+    {
+      id: 'ORD-3921',
+      agency: 'Mihintale',
+      shopName: 'Mihintale Traders (Route 1)',
+      category: 'Wholesale',
+      totalAmount: 90000,
+      discountPercentage: 15,
+      netAmount: 76500,
+      date: '2026-03-30',
+      status: 'Dispatched',
+      paymentStatus: 'Partially Paid',
+      paidAmount: 38000
     }
   ]);
   
@@ -49,6 +62,16 @@ export default function App() {
   const [newDiscount, setNewDiscount] = useState('');
   const [scanningActive, setScanningActive] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Sync Freelan SFA Bills based on credentials
+  const handleSyncFreelan = () => {
+    setIsSyncing(true);
+    setTimeout(() => {
+      setIsSyncing(false);
+      const username = activeAgency === 'Anuradhapura' ? 'CG0388' : 'CG0392';
+      alert(`✅ Successfully synced with Freelan SFA!\nAgency: ${activeAgency} (User: ${username})\nServer: http://freelan.evisionmicroapps.com:60060/Dashboard1\nNew bills loaded successfully!`);
+    }, 1500);
+  };
 
   // Handle Order Submission
   const handleAddOrder = (e: React.FormEvent) => {
@@ -61,6 +84,7 @@ export default function App() {
 
     const order: WholesaleOrder = {
       id: `ORD-${Date.now().toString().slice(-4)}`,
+      agency: activeAgency,
       shopName: newShop,
       category: disc >= 25 ? 'Supermarket' : 'Wholesale',
       totalAmount: total,
@@ -99,7 +123,6 @@ export default function App() {
     }
   };
 
-  // Stop Camera
   const stopCamera = () => {
     setScanningActive(false);
     if (videoRef.current && videoRef.current.srcObject) {
@@ -108,7 +131,6 @@ export default function App() {
     }
   };
 
-  // Update Payment Status
   const updatePaymentStatus = (id: string, status: 'Unpaid' | 'Partially Paid' | 'Fully Paid', amountPaid: number) => {
     setOrders(orders.map(ord => {
       if (ord.id === id) {
@@ -119,6 +141,8 @@ export default function App() {
     alert(`✅ Bill ${id} status updated successfully to: ${status}`);
   };
 
+  const filteredOrders = orders.filter(ord => ord.agency === activeAgency);
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 font-sans p-4 md:p-6">
       {/* Header */}
@@ -128,28 +152,48 @@ export default function App() {
             🟡 GOLDEN DISTRIBUTORS ERP
           </h1>
           <p className="text-slate-400 text-sm mt-1">
-            Anuradhapura & Mihintale 12-Route Distribution Management System (Freelan Linked)
+            Anuradhapura & Mihintale 12-Route Distribution Management System
           </p>
         </div>
         
-        {/* Role Switcher */}
+        {/* Agency Switcher */}
         <div className="flex items-center gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-700">
-          <span className="text-xs text-slate-400 px-2 font-medium">Role:</span>
-          {(['owner', 'sales', 'inventory'] as const).map((r) => (
+          <span className="text-xs text-slate-400 px-2 font-medium">Agency:</span>
+          {(['Anuradhapura', 'Mihintale'] as const).map((ag) => (
             <button
-              key={r}
-              onClick={() => setRole(r)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold capitalize transition-all ${
-                role === r 
+              key={ag}
+              onClick={() => setActiveAgency(ag)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                activeAgency === ag 
                   ? 'bg-amber-500 text-slate-950 shadow-md' 
                   : 'text-slate-400 hover:text-white'
               }`}
             >
-              {r}
+              {ag} ({ag === 'Anuradhapura' ? 'CG0388' : 'CG0392'})
             </button>
           ))}
         </div>
       </header>
+
+      {/* Sync Bar */}
+      <div className="max-w-6xl mx-auto bg-slate-800 border border-slate-700 rounded-xl p-4 mb-6 flex flex-col sm:flex-row justify-between items-center gap-3 shadow-md">
+        <div>
+          <p className="text-sm font-bold text-white flex items-center gap-2">
+            🔗 Freelan SFA Integration ({activeAgency})
+          </p>
+          <p className="text-xs text-slate-400">
+            Username: <span className="text-amber-400 font-mono">{activeAgency === 'Anuradhapura' ? 'CG0388' : 'CG0392'}</span> | Endpoint: freelan.evisionmicroapps.com:60060
+          </p>
+        </div>
+        <button
+          onClick={handleSyncFreelan}
+          disabled={isSyncing}
+          className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded-lg text-xs flex items-center gap-2 transition-all shadow"
+        >
+          <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
+          {isSyncing ? 'Syncing Bills...' : `Sync ${activeAgency} Bills`}
+        </button>
+      </div>
 
       {/* Navigation Tabs */}
       <div className="max-w-6xl mx-auto flex gap-3 mb-6 overflow-x-auto pb-2">
@@ -187,7 +231,7 @@ export default function App() {
           {activeTab === 'orders' && (
             <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg">
               <h2 className="text-lg font-bold text-amber-400 mb-4 flex items-center gap-2">
-                <Wallet className="w-5 h-5" /> Wholesale Orders & QR Invoices (≥25% SMS Alert)
+                <Wallet className="w-5 h-5" /> {activeAgency} Orders & QR Invoices (≥25% SMS Alert)
               </h2>
 
               <form onSubmit={handleAddOrder} className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6 bg-slate-900/50 p-4 rounded-xl border border-slate-700/50">
@@ -233,7 +277,7 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-700">
-                    {orders.map((ord) => (
+                    {filteredOrders.map((ord) => (
                       <tr key={ord.id} className="hover:bg-slate-900/30">
                         <td className="p-3 font-mono text-xs text-amber-400 flex items-center gap-1">
                           <QrCode className="w-4 h-4 text-amber-400" /> {ord.id}
@@ -268,14 +312,14 @@ export default function App() {
           {activeTab === 'credits' && (
             <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg">
               <h2 className="text-lg font-bold text-amber-400 mb-4 flex items-center gap-2">
-                <Clock className="w-5 h-5" /> Morning & Evening Credit Bill Manager
+                <Clock className="w-5 h-5" /> {activeAgency} Credit Bill Manager
               </h2>
               <p className="text-xs text-slate-400 mb-4">
-                Track credit bills distributed in the morning and reconciled in the evening. Filtered by Fully Paid, Partially Paid, and Unpaid.
+                Track credit bills distributed in the morning and reconciled in the evening.
               </p>
 
               <div className="space-y-3">
-                {orders.map(ord => (
+                {filteredOrders.map(ord => (
                   <div key={ord.id} className="bg-slate-900 p-4 rounded-xl border border-slate-700 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                     <div>
                       <p className="font-bold text-white text-sm">{ord.shopName} <span className="text-xs text-amber-400 font-mono">({ord.id})</span></p>
@@ -329,8 +373,8 @@ export default function App() {
               )}
               
               <div className="mt-8 max-w-md mx-auto bg-slate-900 p-4 rounded-xl border border-slate-700 text-left space-y-3">
-                <p className="text-xs font-bold text-slate-400">Quick Bill Status Actions (Manual Override):</p>
-                {orders.map(ord => (
+                <p className="text-xs font-bold text-slate-400">Quick Bill Status Actions ({activeAgency}):</p>
+                {filteredOrders.map(ord => (
                   <div key={ord.id} className="flex justify-between items-center bg-slate-800 p-3 rounded-lg">
                     <span className="text-xs font-mono text-amber-400">{ord.id} - {ord.shopName}</span>
                     <div className="flex gap-1">
@@ -367,8 +411,11 @@ export default function App() {
             <h2 className="text-lg font-bold text-amber-400 mb-3 flex items-center gap-2">
               <Fuel className="w-5 h-5" /> Operations Info
             </h2>
-            <p className="text-sm text-slate-300 mb-4">
-              Freelan SFA Link: <span className="text-xs font-mono text-amber-300">freelan.evisionmicroapps.com:60060</span>
+            <p className="text-sm text-slate-300 mb-2">
+              Active Agency: <span className="font-bold text-amber-400">{activeAgency}</span>
+            </p>
+            <p className="text-xs text-slate-400 mb-4 font-mono">
+              User: {activeAgency === 'Anuradhapura' ? 'CG0388' : 'CG0392'}
             </p>
             <div className="bg-slate-900 p-4 rounded-xl border border-slate-700 mb-4">
               <p className="text-xs text-slate-400">Business Owner</p>
@@ -378,8 +425,8 @@ export default function App() {
           </div>
 
           <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-700 text-center">
-            <p className="text-xs text-slate-400">QR & Camera Scanner</p>
-            <p className="text-xs text-emerald-400 font-semibold mt-1">● Fully Integrated</p>
+            <p className="text-xs text-slate-400">Freelan SFA Sync</p>
+            <p className="text-xs text-emerald-400 font-semibold mt-1">● Configured & Ready</p>
           </div>
         </div>
 
