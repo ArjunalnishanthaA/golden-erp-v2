@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
 import {
   Fuel,
   Wallet,
@@ -16,9 +15,6 @@ import {
   FileText
 } from 'lucide-react';
 
-// Configure PDF.js worker for browser rendering
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
-
 interface WholesaleOrder {
   id: string;
   agency: 'Anuradhapura' | 'Mihintale';
@@ -33,9 +29,11 @@ interface WholesaleOrder {
   paidAmount: number;
 }
 
-interface PdfStampedPage {
-  pageNumber: number;
-  imageUrl: string;
+interface UploadedBillItem {
+  id: string;
+  fileName: string;
+  fileType: 'pdf' | 'image';
+  dataUrl: string;
   invoiceNo: string;
   shopName: string;
   amount: string;
@@ -113,17 +111,15 @@ export default function App() {
   ];
 
   const [activeAgency, setActiveAgency] = useState<'Anuradhapura' | 'Mihintale'>('Mihintale');
-  const [activeTab, setActiveTab] = useState<'orders' | 'pdf' | 'credits' | 'scanner'>('pdf');
+  const [activeTab, setActiveTab] = useState<'pdf' | 'orders' | 'credits' | 'scanner'>('pdf');
   const [selectedDate, setSelectedDate] = useState<string>('ALL');
   const [isSyncing, setIsSyncing] = useState(false);
   const [billToPrint, setBillToPrint] = useState<WholesaleOrder | null>(null);
 
-  // PDF QR Stamper States
-  const [pdfFileName, setPdfFileName] = useState<string>('');
-  const [pdfPages, setPdfPages] = useState<PdfStampedPage[]>([]);
-  const [isProcessingPdf, setIsProcessingPdf] = useState(false);
-  const [printAllPdfPages, setPrintAllPdfPages] = useState(false);
-  const [singlePdfPageToPrint, setSinglePdfPageToPrint] = useState<PdfStampedPage | null>(null);
+  // Uploaded PDF / Bill Items
+  const [uploadedBills, setUploadedBills] = useState<UploadedBillItem[]>([]);
+  const [billToPrintModal, setBillToPrintModal] = useState<UploadedBillItem | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [orders, setOrders] = useState<WholesaleOrder[]>(() => {
     try {
@@ -177,91 +173,64 @@ export default function App() {
     return getQrImageUrlFromPayload(getQrPayload(ord), 160);
   };
 
-  // Handle PDF Upload & Extract Pages + Invoice Numbers
-  const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // Upload 1 or multiple PDF / Image bills from phone or computer
+  const handleFilesUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
 
-    setIsProcessingPdf(true);
-    setPdfFileName(file.name);
-    setPdfPages([]);
+    Array.from(files).forEach((file, idx) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = typeof reader.result === 'string' ? reader.result : '';
+        if (!result) return;
 
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-      const extractedPages: PdfStampedPage[] = [];
+        const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+        const cleanedName = file.name.replace(/\.[^/.]+$/, '');
+        const matchInvoice = cleanedName.match(/CG\d{4}[A-Z0-9]+/i);
 
-      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-        const page = await pdf.getPage(pageNum);
-        const viewport = page.getViewport({ scale: 1.5 });
-
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-
-        if (context) {
-          await page.render({ canvasContext: context, viewport }).promise;
-        }
-
-        // Try extracting text to find Invoice No (e.g., CG0392DSI... or CG0388DSI...)
-        let detectedInvoice = `PAGE-${pageNum}`;
-        try {
-          const textContent = await page.getTextContent();
-          const fullText = textContent.items
-            .map((item: any) => ('str' in item ? item.str : ''))
-            .join(' ');
-          const match = fullText.match(/CG\d{4}[A-Z0-9]+/i);
-          if (match) {
-            detectedInvoice = match[0].toUpperCase();
-          }
-        } catch {
-          // Fallback if text extraction isn't available
-        }
-
-        extractedPages.push({
-          pageNumber: pageNum,
-          imageUrl: canvas.toDataURL('image/jpeg', 0.85),
-          invoiceNo: detectedInvoice,
+        const newItem: UploadedBillItem = {
+          id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+          fileName: file.name,
+          fileType: isPdf ? 'pdf' : 'image',
+          dataUrl: result,
+          invoiceNo: matchInvoice ? matchInvoice[0].toUpperCase() : cleanedName || `BILL-${idx + 1}`,
           shopName: '',
           amount: '',
           paymentStatus: 'Unpaid'
-        });
-      }
+        };
 
-      setPdfPages(extractedPages);
-    } catch (err) {
-      console.error('Error reading PDF:', err);
-      alert('⚠️ PDF ෆයිල් එක කියවීමට නොහැකි විය. වෙනත් PDF එකක් උත්සාහ කරන්න.');
-    } finally {
-      setIsProcessingPdf(false);
-    }
+        setUploadedBills(prev => [newItem, ...prev]);
+      };
+      reader.readAsDataURL(file);
+    });
+
+    e.target.value = '';
   };
 
-  const updatePdfPageField = (
-    pageNumber: number,
+  const updateUploadedBillField = (
+    id: string,
     field: 'invoiceNo' | 'shopName' | 'amount' | 'paymentStatus',
     value: string
   ) => {
-    setPdfPages(prev =>
-      prev.map(p => (p.pageNumber === pageNumber ? { ...p, [field]: value } : p))
+    setUploadedBills(prev =>
+      prev.map(item => (item.id === id ? { ...item, [field]: value } : item))
     );
   };
 
-  const savePdfPageToOrders = (pg: PdfStampedPage) => {
-    const parsedAmount = parseFloat(pg.amount) || 0;
+  const saveUploadedBillToOrders = (item: UploadedBillItem) => {
+    const parsedAmount = parseFloat(item.amount) || 0;
     const newOrd: WholesaleOrder = {
-      id: pg.invoiceNo.trim() || `INV-P${pg.pageNumber}`,
+      id: item.invoiceNo.trim() || `INV-${Date.now().toString().slice(-4)}`,
       agency: activeAgency,
-      shopName: pg.shopName.trim() || `PDF Bill Page ${pg.pageNumber}`,
+      shopName: item.shopName.trim() || item.fileName,
       category: 'Wholesale',
       totalAmount: parsedAmount,
       discountPercentage: 0,
       netAmount: parsedAmount,
       date: selectedDate === 'ALL' ? todayStr : selectedDate,
       status: 'Dispatched',
-      paymentStatus: pg.paymentStatus,
-      paidAmount: pg.paymentStatus === 'Fully Paid' ? parsedAmount : 0
+      paymentStatus: item.paymentStatus,
+      paidAmount: item.paymentStatus === 'Fully Paid' ? parsedAmount : 0
     };
 
     setOrders(prev => [newOrd, ...prev]);
@@ -274,8 +243,8 @@ export default function App() {
       setIsSyncing(false);
       const username = activeAgency === 'Anuradhapura' ? 'CG0388' : 'CG0392';
       const syncDateLabel = selectedDate === 'ALL' ? todayStr : selectedDate;
-      alert(`✅ Freelan SFA Sync තත්ත්වය:\nAgency: ${activeAgency} (${username})\nදිනය: ${syncDateLabel}\nPDF Invoices Upload කර Top-Right QR සමඟ Print කිරීමට "PDF QR Stamper" ටැබ් එක භාවිත කරන්න.`);
-    }, 800);
+      alert(`✅ Freelan SFA Sync තත්ත්වය:\nAgency: ${activeAgency} (${username})\nදිනය: ${syncDateLabel}\nPDF / Bill files Upload කර Top-Right QR සමඟ Print කිරීමට "Upload SFA Bill / PDF" කොටස භාවිත කරන්න.`);
+    }, 600);
   };
 
   const handleResetSampleData = () => {
@@ -386,18 +355,10 @@ export default function App() {
             color: #000000 !important;
             padding: 8px !important;
           }
-          .pdf-print-page {
-            page-break-after: always;
-            break-after: page;
-          }
-          .pdf-print-page:last-child {
-            page-break-after: auto;
-            break-after: auto;
-          }
         }
       `}</style>
 
-      {/* Single Order Print Modal (QR Code on Top-Right) */}
+      {/* Order Print Modal */}
       {billToPrint && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
           <div className="print-only-sheet bg-white text-slate-900 w-full max-w-xl rounded-2xl p-6 shadow-2xl border border-slate-300">
@@ -415,7 +376,6 @@ export default function App() {
                 <button
                   onClick={() => setBillToPrint(null)}
                   className="bg-slate-200 hover:bg-slate-300 text-slate-800 p-1.5 rounded-lg"
-                  aria-label="Close"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -474,15 +434,13 @@ export default function App() {
         </div>
       )}
 
-      {/* Uploaded PDF Single/All Pages Print Preview Modal (QR on Top-Right of each page) */}
-      {(singlePdfPageToPrint || printAllPdfPages) && (
+      {/* Uploaded PDF / Bill Print Modal with Top-Right QR */}
+      {billToPrintModal && (
         <div className="fixed inset-0 z-50 bg-black/85 overflow-y-auto p-4">
           <div className="print-only-sheet max-w-3xl mx-auto bg-white text-slate-900 rounded-2xl p-4 md:p-6 shadow-2xl">
             <div className="no-print flex justify-between items-center pb-4 mb-4 border-b border-slate-200">
               <span className="text-sm font-bold text-slate-800">
-                {printAllPdfPages
-                  ? `All ${pdfPages.length} PDF Pages Preview (Top-Right QR)`
-                  : `Page ${singlePdfPageToPrint?.pageNumber} Preview (Top-Right QR)`}
+                {billToPrintModal.fileName} (Top-Right QR)
               </span>
               <div className="flex items-center gap-2">
                 <button
@@ -492,10 +450,7 @@ export default function App() {
                   <Printer className="w-4 h-4" /> Print Now
                 </button>
                 <button
-                  onClick={() => {
-                    setSinglePdfPageToPrint(null);
-                    setPrintAllPdfPages(false);
-                  }}
+                  onClick={() => setBillToPrintModal(null)}
                   className="bg-slate-200 hover:bg-slate-300 text-slate-800 p-1.5 rounded-lg"
                 >
                   <X className="w-4 h-4" />
@@ -503,39 +458,42 @@ export default function App() {
               </div>
             </div>
 
-            {(printAllPdfPages ? pdfPages : singlePdfPageToPrint ? [singlePdfPageToPrint] : []).map(pg => {
-              const payload = getQrPayloadFromValues(
-                pg.invoiceNo,
-                activeAgency,
-                activeDateForQr,
-                pg.amount || '0',
-                pg.paymentStatus
-              );
-              return (
-                <div
-                  key={pg.pageNumber}
-                  className="pdf-print-page relative border border-slate-300 rounded-lg overflow-hidden bg-white mb-6"
-                >
-                  {/* Top-Right QR Code stamped over the top-right area of the uploaded bill page */}
-                  <div className="absolute top-3 right-3 z-10 bg-white border-2 border-slate-900 rounded-lg p-1.5 shadow flex flex-col items-center">
-                    <img
-                      src={getQrImageUrlFromPayload(payload, 140)}
-                      alt={`QR for ${pg.invoiceNo}`}
-                      className="w-24 h-24 object-contain"
-                    />
-                    <span className="text-[10px] font-mono font-bold text-slate-900 mt-0.5">
-                      {pg.invoiceNo}
-                    </span>
-                  </div>
+            <div className="relative border border-slate-300 rounded-lg overflow-hidden bg-white">
+              {/* Top-Right QR Code */}
+              <div className="absolute top-3 right-3 z-20 bg-white border-2 border-slate-900 rounded-lg p-1.5 shadow flex flex-col items-center">
+                <img
+                  src={getQrImageUrlFromPayload(
+                    getQrPayloadFromValues(
+                      billToPrintModal.invoiceNo,
+                      activeAgency,
+                      activeDateForQr,
+                      billToPrintModal.amount || '0',
+                      billToPrintModal.paymentStatus
+                    ),
+                    150
+                  )}
+                  alt={`QR ${billToPrintModal.invoiceNo}`}
+                  className="w-24 h-24 object-contain"
+                />
+                <span className="text-[10px] font-mono font-bold text-slate-900 mt-0.5">
+                  {billToPrintModal.invoiceNo}
+                </span>
+              </div>
 
-                  <img
-                    src={pg.imageUrl}
-                    alt={`Bill Page ${pg.pageNumber}`}
-                    className="w-full h-auto block"
-                  />
-                </div>
-              );
-            })}
+              {billToPrintModal.fileType === 'pdf' ? (
+                <iframe
+                  src={billToPrintModal.dataUrl}
+                  title={billToPrintModal.fileName}
+                  className="w-full h-[75vh] border-0"
+                />
+              ) : (
+                <img
+                  src={billToPrintModal.dataUrl}
+                  alt={billToPrintModal.fileName}
+                  className="w-full h-auto block"
+                />
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -647,7 +605,7 @@ export default function App() {
               activeTab === 'pdf' ? 'bg-amber-500 text-slate-950 shadow-lg' : 'bg-slate-800 text-slate-300 border border-slate-700'
             }`}
           >
-            <FileUp className="w-4 h-4" /> PDF QR Stamper ({pdfPages.length})
+            <FileUp className="w-4 h-4" /> Upload Bill / PDF ({uploadedBills.length})
           </button>
           <button
             onClick={() => { stopCamera(); setActiveTab('orders'); }}
@@ -678,95 +636,86 @@ export default function App() {
         <main className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="md:col-span-2 space-y-6">
 
-            {/* PDF Upload & Top-Right QR Stamper Tab */}
+            {/* Upload PDF / Bill Tab */}
             {activeTab === 'pdf' && (
               <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg space-y-5">
                 <div>
                   <h2 className="text-lg font-bold text-amber-400 flex items-center gap-2">
-                    <FileUp className="w-5 h-5" /> Upload SFA Invoice PDF & Stamp Top-Right QR
+                    <FileUp className="w-5 h-5" /> Upload SFA PDF / Bill & Add Top-Right QR
                   </h2>
                   <p className="text-xs text-slate-400 mt-1">
-                    Freelan SFA එකෙන් Invoice convert කළාම එන PDF එක (බිල් 20ක් තිබුණත්) මෙතැනින් Upload කර, එක් එක් බිලේ ඉහළ දකුණු පැත්තේ QR කෝඩ් එක සමඟ නැවත Print කරන්න.
+                    Freelan SFA එකෙන් ගන්න PDF බිල් (හෝ ෆොටෝ) මෙතැනින් Upload කර, ඉහළ දකුණු පැත්තේ QR කෝඩ් එක සමඟ නැවත Print කරන්න.
                   </p>
                 </div>
 
-                <label className="flex flex-col items-center justify-center border-2 border-dashed border-amber-500/60 hover:border-amber-400 bg-slate-900/60 rounded-xl p-6 cursor-pointer transition-all">
-                  <FileText className="w-10 h-10 text-amber-400 mb-2" />
-                  <span className="text-sm font-bold text-white">
-                    {pdfFileName ? `Selected: ${pdfFileName}` : 'Tap to Upload Invoice PDF File'}
-                  </span>
-                  <span className="text-xs text-slate-400 mt-1">PDF files only (Supports multi-page bills)</span>
+                {/* Explicit File Input + Button */}
+                <div className="bg-slate-900/70 border-2 border-dashed border-amber-500/70 rounded-xl p-5 text-center space-y-3">
+                  <FileText className="w-10 h-10 text-amber-400 mx-auto" />
+                  <p className="text-sm font-bold text-white">
+                    PDF / Bill ෆයිල් තෝරා Upload කරන්න
+                  </p>
                   <input
+                    ref={fileInputRef}
                     type="file"
-                    accept="application/pdf"
-                    onChange={handlePdfUpload}
-                    className="hidden"
+                    accept="application/pdf,image/*"
+                    multiple
+                    onChange={handleFilesUpload}
+                    className="block w-full text-xs text-slate-300 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-amber-500 file:text-slate-950 hover:file:bg-amber-400 cursor-pointer"
                   />
-                </label>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded-lg text-xs inline-flex items-center gap-1.5"
+                  >
+                    <FileUp className="w-4 h-4" /> Choose PDF / Bill File
+                  </button>
+                </div>
 
-                {isProcessingPdf && (
-                  <div className="text-center py-6 text-amber-400 text-sm font-semibold">
-                    PDF පිටු කියවමින් QR සකස් කරමින් පවතී...
-                  </div>
-                )}
-
-                {pdfPages.length > 0 && (
+                {uploadedBills.length > 0 && (
                   <div className="space-y-4">
-                    <div className="flex flex-wrap justify-between items-center gap-2 bg-slate-900 p-3 rounded-xl border border-slate-700">
-                      <span className="text-xs font-bold text-emerald-400">
-                        {pdfPages.length} Bills / Pages Ready
-                      </span>
-                      <button
-                        onClick={() => setPrintAllPdfPages(true)}
-                        className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3.5 py-1.5 rounded-lg text-xs flex items-center gap-1.5"
-                      >
-                        <Printer className="w-4 h-4" /> Print All {pdfPages.length} Pages (Top-Right QR)
-                      </button>
-                    </div>
-
-                    {pdfPages.map(pg => {
+                    {uploadedBills.map(item => {
                       const payload = getQrPayloadFromValues(
-                        pg.invoiceNo,
+                        item.invoiceNo,
                         activeAgency,
                         activeDateForQr,
-                        pg.amount || '0',
-                        pg.paymentStatus
+                        item.amount || '0',
+                        item.paymentStatus
                       );
                       return (
                         <div
-                          key={pg.pageNumber}
+                          key={item.id}
                           className="bg-slate-900 border border-slate-700 rounded-xl p-4 space-y-3"
                         >
                           <div className="flex justify-between items-start gap-3">
                             <div className="flex-1 space-y-2">
-                              <div className="text-xs font-bold text-amber-400">
-                                Page {pg.pageNumber} / {pdfPages.length}
+                              <div className="text-xs font-bold text-emerald-400 break-all">
+                                {item.fileName}
                               </div>
                               <input
                                 type="text"
                                 placeholder="Invoice No (e.g. CG0392DSI034516)"
-                                value={pg.invoiceNo}
-                                onChange={(e) => updatePdfPageField(pg.pageNumber, 'invoiceNo', e.target.value)}
+                                value={item.invoiceNo}
+                                onChange={(e) => updateUploadedBillField(item.id, 'invoiceNo', e.target.value)}
                                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white"
                               />
                               <input
                                 type="text"
                                 placeholder="Shop Name (Optional)"
-                                value={pg.shopName}
-                                onChange={(e) => updatePdfPageField(pg.pageNumber, 'shopName', e.target.value)}
+                                value={item.shopName}
+                                onChange={(e) => updateUploadedBillField(item.id, 'shopName', e.target.value)}
                                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
                               />
                               <div className="grid grid-cols-2 gap-2">
                                 <input
                                   type="number"
-                                  placeholder="Total Value (LKR)"
-                                  value={pg.amount}
-                                  onChange={(e) => updatePdfPageField(pg.pageNumber, 'amount', e.target.value)}
+                                  placeholder="Amount (LKR)"
+                                  value={item.amount}
+                                  onChange={(e) => updateUploadedBillField(item.id, 'amount', e.target.value)}
                                   className="bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
                                 />
                                 <select
-                                  value={pg.paymentStatus}
-                                  onChange={(e) => updatePdfPageField(pg.pageNumber, 'paymentStatus', e.target.value)}
+                                  value={item.paymentStatus}
+                                  onChange={(e) => updateUploadedBillField(item.id, 'paymentStatus', e.target.value)}
                                   className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white"
                                 >
                                   <option value="Unpaid">Unpaid</option>
@@ -776,11 +725,10 @@ export default function App() {
                               </div>
                             </div>
 
-                            {/* Top-Right QR Preview */}
                             <div className="bg-white p-1.5 rounded-lg border border-slate-400 flex flex-col items-center shrink-0">
                               <img
                                 src={getQrImageUrlFromPayload(payload, 120)}
-                                alt={`QR ${pg.invoiceNo}`}
+                                alt={`QR ${item.invoiceNo}`}
                                 className="w-20 h-20 object-contain"
                               />
                               <span className="text-[9px] font-mono font-bold text-slate-900 mt-0.5">
@@ -791,16 +739,16 @@ export default function App() {
 
                           <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
                             <button
-                              onClick={() => savePdfPageToOrders(pg)}
+                              onClick={() => saveUploadedBillToOrders(item)}
                               className="bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold px-3 py-1.5 rounded-lg text-xs"
                             >
                               Save to Credit List
                             </button>
                             <button
-                              onClick={() => setSinglePdfPageToPrint(pg)}
+                              onClick={() => setBillToPrintModal(item)}
                               className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3.5 py-1.5 rounded-lg text-xs flex items-center gap-1"
                             >
-                              <Printer className="w-3.5 h-3.5" /> Preview & Print Page
+                              <Printer className="w-3.5 h-3.5" /> Preview & Print
                             </button>
                           </div>
                         </div>
@@ -1018,8 +966,8 @@ export default function App() {
             </div>
 
             <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-700 text-center">
-              <p className="text-xs text-slate-400">PDF Top-Right QR Stamper</p>
-              <p className="text-xs text-emerald-400 font-semibold mt-1">● Ready for Multi-Page PDF</p>
+              <p className="text-xs text-slate-400">PDF / Bill Top-Right QR</p>
+              <p className="text-xs text-emerald-400 font-semibold mt-1">● Ready to Upload & Print</p>
             </div>
           </div>
         </main>
