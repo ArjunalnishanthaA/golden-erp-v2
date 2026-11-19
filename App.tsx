@@ -13,7 +13,8 @@ import {
   RotateCcw,
   FileUp,
   FileText,
-  Mail
+  Mail,
+  CheckCircle2
 } from 'lucide-react';
 
 interface WholesaleOrder {
@@ -58,6 +59,19 @@ export default function App() {
 
   const getDefaultOrders = (): WholesaleOrder[] => [
     {
+      id: '26NOV_R187SIN_801',
+      agency: 'Mihintale',
+      shopName: 'Niranjala Stores - R187-000156',
+      category: 'Wholesale',
+      totalAmount: 3300,
+      discountPercentage: 0,
+      netAmount: 3300,
+      date: todayStr,
+      status: 'Dispatched',
+      paymentStatus: 'Unpaid',
+      paidAmount: 0
+    },
+    {
       id: 'CG0392DSI034516',
       agency: 'Mihintale',
       shopName: 'Saliyapura Farm Shop - R187-000143',
@@ -95,19 +109,6 @@ export default function App() {
       status: 'Pending Approval',
       paymentStatus: 'Unpaid',
       paidAmount: 0
-    },
-    {
-      id: 'ORD-3880',
-      agency: 'Anuradhapura',
-      shopName: 'New Town Pharmacy & Stores (Route 3)',
-      category: 'Wholesale',
-      totalAmount: 85000,
-      discountPercentage: 12,
-      netAmount: 74800,
-      date: yesterdayStr,
-      status: 'Dispatched',
-      paymentStatus: 'Fully Paid',
-      paidAmount: 74800
     }
   ];
 
@@ -121,6 +122,14 @@ export default function App() {
   const [uploadedBills, setUploadedBills] = useState<UploadedBillItem[]>([]);
   const [billToPrintModal, setBillToPrintModal] = useState<UploadedBillItem | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // QR Scanner States
+  const [scanningActive, setScanningActive] = useState(false);
+  const [scannedResultText, setScannedResultText] = useState<string>('');
+  const [matchedScannedOrder, setMatchedScannedOrder] = useState<WholesaleOrder | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const scanCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const scanIntervalRef = useRef<number | null>(null);
 
   const [orders, setOrders] = useState<WholesaleOrder[]>(() => {
     try {
@@ -145,11 +154,17 @@ export default function App() {
     }
   }, [orders]);
 
+  useEffect(() => {
+    return () => {
+      if (scanIntervalRef.current) {
+        window.clearInterval(scanIntervalRef.current);
+      }
+    };
+  }, []);
+
   const [newShop, setNewShop] = useState('');
   const [newTotal, setNewTotal] = useState('');
   const [newDiscount, setNewDiscount] = useState('');
-  const [scanningActive, setScanningActive] = useState(false);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const getQrPayloadFromValues = (
     invoiceNo: string,
@@ -162,8 +177,9 @@ export default function App() {
     return `${invoiceNo}|${agencyCode}|${dateStr}|${amount}|${status}`;
   };
 
-  const getQrImageUrlFromPayload = (payload: string, size = 160) => {
-    return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=4&data=${encodeURIComponent(payload)}`;
+  // High-contrast, low-density QR so camera + printer can scan easily
+  const getQrImageUrlFromPayload = (payload: string, size = 200) => {
+    return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&ecc=L&margin=8&data=${encodeURIComponent(payload)}`;
   };
 
   const getQrPayload = (ord: WholesaleOrder) => {
@@ -171,7 +187,7 @@ export default function App() {
   };
 
   const getQrImageUrl = (ord: WholesaleOrder) => {
-    return getQrImageUrlFromPayload(getQrPayload(ord), 160);
+    return getQrImageUrlFromPayload(getQrPayload(ord), 200);
   };
 
   const handleFilesUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -186,7 +202,7 @@ export default function App() {
 
         const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
         const cleanedName = file.name.replace(/\.[^/.]+$/, '');
-        const matchInvoice = cleanedName.match(/CG\d{4}[A-Z0-9]+/i);
+        const matchInvoice = cleanedName.match(/(?:CG\d{4}[A-Z0-9]+|\d{2}[A-Z]{3}_[A-Z0-9_]+)/i);
 
         const newItem: UploadedBillItem = {
           id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
@@ -243,7 +259,7 @@ export default function App() {
       setIsSyncing(false);
       const username = activeAgency === 'Anuradhapura' ? 'CG0388' : 'CG0392';
       const syncDateLabel = selectedDate === 'ALL' ? todayStr : selectedDate;
-      alert(`✅ Freelan SFA Sync තත්ත්වය:\nAgency: ${activeAgency} (${username})\nදිනය: ${syncDateLabel}\nඊමේල් එකෙන් Download කළ PDF බිල් Upload කර Top-Right QR සමඟ Print කිරීමට "Upload PDF Bill" කොටස භාවිත කරන්න.`);
+      alert(`✅ Freelan SFA Sync තත්ත්වය:\nAgency: ${activeAgency} (${username})\nදිනය: ${syncDateLabel}\nPDF බිල් Upload කර Top-Right QR සමඟ Print කිරීමට "Upload PDF Bill" කොටස භාවිත කරන්න.`);
     }, 600);
   };
 
@@ -288,13 +304,95 @@ export default function App() {
     setNewDiscount('');
   };
 
+  const handleDecodedQrValue = (rawValue: string) => {
+    const trimmed = rawValue.trim();
+    if (!trimmed) return;
+    setScannedResultText(trimmed);
+
+    const parts = trimmed.split('|');
+    const invoiceCandidate = parts[0]?.trim() || trimmed;
+
+    const existing = orders.find(
+      o => o.id.toLowerCase() === invoiceCandidate.toLowerCase()
+    );
+
+    if (existing) {
+      setMatchedScannedOrder(existing);
+    } else {
+      const parsedAmount = parseFloat(parts[3] || '0') || 0;
+      const created: WholesaleOrder = {
+        id: invoiceCandidate,
+        agency: parts[1] === 'CG0388' ? 'Anuradhapura' : 'Mihintale',
+        shopName: `Scanned Bill (${invoiceCandidate})`,
+        category: 'Wholesale',
+        totalAmount: parsedAmount,
+        discountPercentage: 0,
+        netAmount: parsedAmount,
+        date: parts[2] || todayStr,
+        status: 'Dispatched',
+        paymentStatus: 'Unpaid',
+        paidAmount: 0
+      };
+      setOrders(prev => [created, ...prev]);
+      setMatchedScannedOrder(created);
+    }
+  };
+
   const startCamera = async () => {
     setScanningActive(true);
+    setScannedResultText('');
+    setMatchedScannedOrder(null);
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        }
+      });
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        await videoRef.current.play();
       }
+
+      const BarcodeDetectorCtor = (window as any).BarcodeDetector;
+      let detector: any = null;
+      if (BarcodeDetectorCtor) {
+        try {
+          detector = new BarcodeDetectorCtor({ formats: ['qr_code'] });
+        } catch {
+          detector = null;
+        }
+      }
+
+      if (scanIntervalRef.current) {
+        window.clearInterval(scanIntervalRef.current);
+      }
+
+      scanIntervalRef.current = window.setInterval(async () => {
+        if (!videoRef.current || videoRef.current.readyState < 2) return;
+
+        if (detector) {
+          try {
+            const barcodes = await detector.detect(videoRef.current);
+            if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
+              handleDecodedQrValue(String(barcodes[0].rawValue));
+            }
+          } catch {
+            // Ignore frame detection error
+          }
+        } else if (scanCanvasRef.current) {
+          const canvas = scanCanvasRef.current;
+          const ctx = canvas.getContext('2d');
+          canvas.width = videoRef.current.videoWidth || 640;
+          canvas.height = videoRef.current.videoHeight || 480;
+          if (ctx) {
+            ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
+          }
+        }
+      }, 450);
     } catch (err) {
       console.error("Camera access error:", err);
       alert("⚠️ කැමරාව ක්‍රියාත්මක කර ගැනීමට අවසර නැත නැතහොත් කැමරාව භාවිතයේ ඇත.");
@@ -304,6 +402,10 @@ export default function App() {
 
   const stopCamera = () => {
     setScanningActive(false);
+    if (scanIntervalRef.current) {
+      window.clearInterval(scanIntervalRef.current);
+      scanIntervalRef.current = null;
+    }
     if (videoRef.current && videoRef.current.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
       stream.getTracks().forEach(track => track.stop());
@@ -313,7 +415,11 @@ export default function App() {
   const updatePaymentStatus = (id: string, status: 'Unpaid' | 'Partially Paid' | 'Fully Paid', amountPaid: number) => {
     setOrders(prev => prev.map(ord => {
       if (ord.id === id) {
-        return { ...ord, paymentStatus: status, paidAmount: amountPaid };
+        const updated = { ...ord, paymentStatus: status, paidAmount: amountPaid };
+        if (matchedScannedOrder?.id === id) {
+          setMatchedScannedOrder(updated);
+        }
+        return updated;
       }
       return ord;
     }));
@@ -335,33 +441,68 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 font-sans p-4 md:p-6">
       <style>{`
+        @page {
+          size: auto;
+          margin: 0mm;
+        }
         @media print {
-          body {
+          html, body {
             background: #ffffff !important;
             color: #000000 !important;
-            margin: 0;
-            padding: 0;
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 100% !important;
+            height: 100% !important;
           }
           .no-print {
             display: none !important;
           }
-          .print-only-sheet {
+          .print-modal-backdrop {
+            position: static !important;
+            background: #ffffff !important;
+            padding: 0 !important;
+            margin: 0 !important;
             display: block !important;
+          }
+          .print-full-page-wrapper {
+            position: relative !important;
             width: 100% !important;
             max-width: 100% !important;
-            box-shadow: none !important;
+            margin: 0 !important;
+            padding: 0 !important;
             border: none !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
             background: #ffffff !important;
-            color: #000000 !important;
-            padding: 8px !important;
+          }
+          .print-bill-frame {
+            position: relative !important;
+            width: 100% !important;
+            height: 100vh !important;
+            border: none !important;
+            border-radius: 0 !important;
+          }
+          .print-bill-embed {
+            width: 100% !important;
+            height: 100vh !important;
+            display: block !important;
+          }
+          .print-top-right-qr {
+            position: fixed !important;
+            top: 10px !important;
+            right: 10px !important;
+            z-index: 9999 !important;
+            background: #ffffff !important;
+            border: 1.5px solid #000000 !important;
+            padding: 4px !important;
           }
         }
       `}</style>
 
       {/* Order Print Modal */}
       {billToPrint && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
-          <div className="print-only-sheet bg-white text-slate-900 w-full max-w-xl rounded-2xl p-6 shadow-2xl border border-slate-300">
+        <div className="print-modal-backdrop fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+          <div className="print-full-page-wrapper bg-white text-slate-900 w-full max-w-xl rounded-2xl p-6 shadow-2xl border border-slate-300">
             <div className="no-print flex justify-between items-center pb-4 mb-4 border-b border-slate-200">
               <span className="text-sm font-bold text-slate-700">
                 Invoice Preview (Top-Right QR Included)
@@ -397,7 +538,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex flex-col items-center border border-slate-400 rounded-lg p-2 bg-white shrink-0">
+              <div className="print-top-right-qr flex flex-col items-center border border-slate-400 rounded-lg p-2 bg-white shrink-0">
                 <img
                   src={getQrImageUrl(billToPrint)}
                   alt={`QR Code for ${billToPrint.id}`}
@@ -434,13 +575,13 @@ export default function App() {
         </div>
       )}
 
-      {/* Uploaded PDF Print Modal with Top-Right QR */}
+      {/* Uploaded PDF Print Modal with Full-Size Layout & Top-Right QR Only */}
       {billToPrintModal && (
-        <div className="fixed inset-0 z-50 bg-black/85 overflow-y-auto p-4">
-          <div className="print-only-sheet max-w-3xl mx-auto bg-white text-slate-900 rounded-2xl p-4 md:p-6 shadow-2xl">
+        <div className="print-modal-backdrop fixed inset-0 z-50 bg-black/85 overflow-y-auto p-4">
+          <div className="print-full-page-wrapper max-w-4xl mx-auto bg-white text-slate-900 rounded-2xl p-4 md:p-6 shadow-2xl">
             <div className="no-print flex justify-between items-center pb-4 mb-4 border-b border-slate-200">
               <span className="text-sm font-bold text-slate-800">
-                {billToPrintModal.fileName} (Top-Right QR)
+                {billToPrintModal.fileName} (Original Layout + Top-Right QR)
               </span>
               <div className="flex items-center gap-2">
                 <button
@@ -458,9 +599,9 @@ export default function App() {
               </div>
             </div>
 
-            <div className="relative border border-slate-300 rounded-lg overflow-hidden bg-white">
-              {/* Top-Right QR Code */}
-              <div className="absolute top-3 right-3 z-20 bg-white border-2 border-slate-900 rounded-lg p-1.5 shadow flex flex-col items-center">
+            <div className="print-bill-frame relative border border-slate-300 rounded-lg overflow-hidden bg-white">
+              {/* Top-Right QR Code Only */}
+              <div className="print-top-right-qr absolute top-3 right-3 z-20 bg-white border border-slate-900 rounded-md p-1.5 shadow flex flex-col items-center">
                 <img
                   src={getQrImageUrlFromPayload(
                     getQrPayloadFromValues(
@@ -470,12 +611,12 @@ export default function App() {
                       billToPrintModal.amount || '0',
                       billToPrintModal.paymentStatus
                     ),
-                    150
+                    220
                   )}
                   alt={`QR ${billToPrintModal.invoiceNo}`}
                   className="w-24 h-24 object-contain"
                 />
-                <span className="text-[10px] font-mono font-bold text-slate-900 mt-0.5">
+                <span className="text-[9px] font-mono font-bold text-slate-900 mt-0.5">
                   {billToPrintModal.invoiceNo}
                 </span>
               </div>
@@ -484,13 +625,13 @@ export default function App() {
                 <iframe
                   src={billToPrintModal.dataUrl}
                   title={billToPrintModal.fileName}
-                  className="w-full h-[75vh] border-0"
+                  className="print-bill-embed w-full h-[80vh] border-0"
                 />
               ) : (
                 <img
                   src={billToPrintModal.dataUrl}
                   alt={billToPrintModal.fileName}
-                  className="w-full h-auto block"
+                  className="print-bill-embed w-full h-auto block"
                 />
               )}
             </div>
@@ -644,11 +785,10 @@ export default function App() {
                     <FileUp className="w-5 h-5" /> Upload Email / SFA PDF Bill & Add Top-Right QR
                   </h2>
                   <p className="text-xs text-slate-400 mt-1">
-                    ඊමේල් එකට ආපු PDF ෆයිල් එක Download කර (Downloads / Files වෙත), පහත බොත්තමෙන් තෝරා ඉහළ දකුණු පැත්තේ QR කෝඩ් එක සමඟ නැවත Print කරන්න.
+                    PDF බිල් Upload කර, original බිලේ ඉහළ දකුණු පැත්තේ QR කෝඩ් එක සමඟ Print කරන්න.
                   </p>
                 </div>
 
-                {/* Email PDF Quick Steps Card */}
                 <div className="bg-slate-900/90 border border-amber-500/40 rounded-xl p-3.5 text-xs text-slate-300 space-y-1">
                   <p className="font-bold text-amber-400 flex items-center gap-1.5">
                     <Mail className="w-4 h-4" /> ඊමේල් එකේ PDF බිල මෙතැනට ගන්නා කෙටි මඟ:
@@ -657,7 +797,6 @@ export default function App() {
                   <p>2. පහත <strong>Choose PDF File</strong> ඔබා, ෆෝන් එකේ <strong>Downloads / Files</strong> වලින් ඒ PDF එක තෝරන්න.</p>
                 </div>
 
-                {/* PDF File Input + Button */}
                 <div className="bg-slate-900/70 border-2 border-dashed border-amber-500/70 rounded-xl p-5 text-center space-y-3">
                   <FileText className="w-10 h-10 text-amber-400 mx-auto" />
                   <p className="text-sm font-bold text-white">
@@ -680,307 +819,4 @@ export default function App() {
                   </button>
                 </div>
 
-                {uploadedBills.length > 0 && (
-                  <div className="space-y-4">
-                    {uploadedBills.map(item => {
-                      const payload = getQrPayloadFromValues(
-                        item.invoiceNo,
-                        activeAgency,
-                        activeDateForQr,
-                        item.amount || '0',
-                        item.paymentStatus
-                      );
-                      return (
-                        <div
-                          key={item.id}
-                          className="bg-slate-900 border border-slate-700 rounded-xl p-4 space-y-3"
-                        >
-                          <div className="flex justify-between items-start gap-3">
-                            <div className="flex-1 space-y-2">
-                              <div className="text-xs font-bold text-emerald-400 break-all">
-                                {item.fileName}
-                              </div>
-                              <input
-                                type="text"
-                                placeholder="Invoice No (e.g. CG0392DSI034516)"
-                                value={item.invoiceNo}
-                                onChange={(e) => updateUploadedBillField(item.id, 'invoiceNo', e.target.value)}
-                                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white"
-                              />
-                              <input
-                                type="text"
-                                placeholder="Shop Name (Optional)"
-                                value={item.shopName}
-                                onChange={(e) => updateUploadedBillField(item.id, 'shopName', e.target.value)}
-                                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
-                              />
-                              <div className="grid grid-cols-2 gap-2">
-                                <input
-                                  type="number"
-                                  placeholder="Amount (LKR)"
-                                  value={item.amount}
-                                  onChange={(e) => updateUploadedBillField(item.id, 'amount', e.target.value)}
-                                  className="bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
-                                />
-                                <select
-                                  value={item.paymentStatus}
-                                  onChange={(e) => updateUploadedBillField(item.id, 'paymentStatus', e.target.value)}
-                                  className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white"
-                                >
-                                  <option value="Unpaid">Unpaid</option>
-                                  <option value="Partially Paid">Partially Paid</option>
-                                  <option value="Fully Paid">Fully Paid</option>
-                                </select>
-                              </div>
-                            </div>
-
-                            <div className="bg-white p-1.5 rounded-lg border border-slate-400 flex flex-col items-center shrink-0">
-                              <img
-                                src={getQrImageUrlFromPayload(payload, 120)}
-                                alt={`QR ${item.invoiceNo}`}
-                                className="w-20 h-20 object-contain"
-                              />
-                              <span className="text-[9px] font-mono font-bold text-slate-900 mt-0.5">
-                                Top-Right QR
-                              </span>
-                            </div>
-                          </div>
-
-                          <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
-                            <button
-                              onClick={() => saveUploadedBillToOrders(item)}
-                              className="bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold px-3 py-1.5 rounded-lg text-xs"
-                            >
-                              Save to Credit List
-                            </button>
-                            <button
-                              onClick={() => setBillToPrintModal(item)}
-                              className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3.5 py-1.5 rounded-lg text-xs flex items-center gap-1"
-                            >
-                              <Printer className="w-3.5 h-3.5" /> Preview & Print
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Orders & QR Invoices Tab */}
-            {activeTab === 'orders' && (
-              <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg">
-                <h2 className="text-lg font-bold text-amber-400 mb-4 flex items-center gap-2">
-                  <Wallet className="w-5 h-5" /> {activeAgency} Orders & QR Invoices
-                </h2>
-
-                <form onSubmit={handleAddOrder} className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6 bg-slate-900/50 p-4 rounded-xl border border-slate-700/50">
-                  <input
-                    type="text"
-                    placeholder="Shop Name"
-                    value={newShop}
-                    onChange={(e) => setNewShop(e.target.value)}
-                    className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-400"
-                  />
-                  <input
-                    type="number"
-                    placeholder="Total Amount (LKR)"
-                    value={newTotal}
-                    onChange={(e) => setNewTotal(e.target.value)}
-                    className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-400"
-                  />
-                  <input
-                    type="number"
-                    placeholder="Discount %"
-                    value={newDiscount}
-                    onChange={(e) => setNewDiscount(e.target.value)}
-                    className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-amber-400"
-                  />
-                  <button
-                    type="submit"
-                    className="sm:col-span-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold py-2.5 rounded-lg text-sm transition-all shadow-md"
-                  >
-                    Create Order & Generate QR Invoice
-                  </button>
-                </form>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead className="bg-slate-900 text-slate-400 border-b border-slate-700">
-                      <tr>
-                        <th className="p-3">Invoice / Date</th>
-                        <th className="p-3">Shop Name</th>
-                        <th className="p-3">Net Amount</th>
-                        <th className="p-3">Status</th>
-                        <th className="p-3">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-700">
-                      {filteredOrders.length === 0 ? (
-                        <tr>
-                          <td colSpan={5} className="p-6 text-center text-slate-400 text-xs">
-                            තෝරාගත් දිනයට අදාළ බිල්පත් කිසිවක් හමු නොවීය.
-                          </td>
-                        </tr>
-                      ) : (
-                        filteredOrders.map((ord) => (
-                          <tr key={ord.id} className="hover:bg-slate-900/30">
-                            <td className="p-3">
-                              <div className="font-mono text-xs text-amber-400 flex items-center gap-1">
-                                <QrCode className="w-4 h-4 text-amber-400" /> {ord.id}
-                              </div>
-                              <div className="text-[11px] text-slate-400 mt-0.5">{ord.date}</div>
-                            </td>
-                            <td className="p-3 font-medium">{ord.shopName}</td>
-                            <td className="p-3 font-semibold">LKR {ord.netAmount.toLocaleString()}</td>
-                            <td className="p-3">
-                              <span className={`text-xs px-2.5 py-1 rounded-full font-bold ${
-                                ord.paymentStatus === 'Fully Paid' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' :
-                                ord.paymentStatus === 'Partially Paid' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30' :
-                                'bg-rose-500/10 text-rose-400 border border-rose-500/30'
-                              }`}>
-                                {ord.paymentStatus}
-                              </span>
-                            </td>
-                            <td className="p-3">
-                              <button
-                                onClick={() => setBillToPrint(ord)}
-                                className="bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-xs font-bold text-amber-300"
-                              >
-                                Print QR Bill
-                              </button>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {/* Credit Bills Manager Tab */}
-            {activeTab === 'credits' && (
-              <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg">
-                <h2 className="text-lg font-bold text-amber-400 mb-4 flex items-center gap-2">
-                  <Clock className="w-5 h-5" /> {activeAgency} Credit Bill Manager
-                </h2>
-
-                <div className="space-y-3">
-                  {filteredOrders.map(ord => (
-                    <div key={ord.id} className="bg-slate-900 p-4 rounded-xl border border-slate-700 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-                      <div>
-                        <p className="font-bold text-white text-sm">{ord.shopName} <span className="text-xs text-amber-400 font-mono">({ord.id})</span></p>
-                        <p className="text-xs text-slate-400 mt-1">Date: {ord.date} | Net: LKR {ord.netAmount.toLocaleString()} | Paid: LKR {ord.paidAmount.toLocaleString()}</p>
-                      </div>
-                      <span className={`text-xs px-3 py-1 rounded-full font-bold ${
-                        ord.paymentStatus === 'Fully Paid' ? 'bg-emerald-500/20 text-emerald-400' :
-                        ord.paymentStatus === 'Partially Paid' ? 'bg-amber-500/20 text-amber-400' :
-                        'bg-rose-500/20 text-rose-400'
-                      }`}>
-                        {ord.paymentStatus}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Live Camera QR Scanner Tab */}
-            {activeTab === 'scanner' && (
-              <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg text-center py-8">
-                <Camera className="w-16 h-16 text-amber-400 mx-auto mb-4" />
-                <h2 className="text-xl font-bold text-amber-400 mb-2">Live Camera QR Bill Scanner</h2>
-                <p className="text-sm text-slate-300 max-w-md mx-auto mb-6">
-                  හවසට බිල්වල ඉහළ දකුණු පැත්තේ තියෙන QR කෝඩ් එක ස්කෑන් කර Paid / Half / Unpaid තත්ත්වය යාවත්කාලීන කරන්න.
-                </p>
-
-                {!scanningActive ? (
-                  <button
-                    onClick={startCamera}
-                    className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-6 py-3 rounded-xl shadow-lg transition-all flex items-center gap-2 mx-auto"
-                  >
-                    <Scan className="w-5 h-5" /> Turn On Camera Scanner
-                  </button>
-                ) : (
-                  <div className="space-y-4">
-                    <div className="relative w-full max-w-sm mx-auto bg-black rounded-xl overflow-hidden border-2 border-amber-400 aspect-[3/4]">
-                      <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
-                      <div className="absolute inset-0 border-4 border-amber-400/30 flex items-center justify-center pointer-events-none">
-                        <div className="w-48 h-48 border-2 border-dashed border-amber-400 rounded-lg animate-pulse"></div>
-                      </div>
-                    </div>
-                    <button
-                      onClick={stopCamera}
-                      className="bg-rose-600 hover:bg-rose-500 text-white font-bold px-6 py-2 rounded-xl text-sm transition-all"
-                    >
-                      Turn Off Camera
-                    </button>
-                  </div>
-                )}
-
-                <div className="mt-8 max-w-md mx-auto bg-slate-900 p-4 rounded-xl border border-slate-700 text-left space-y-3">
-                  <p className="text-xs font-bold text-slate-400">Quick Bill Status Actions ({activeAgency}):</p>
-                  {filteredOrders.map(ord => (
-                    <div key={ord.id} className="flex justify-between items-center bg-slate-800 p-3 rounded-lg">
-                      <div>
-                        <span className="text-xs font-mono text-amber-400 block">{ord.id} ({ord.date})</span>
-                        <span className="text-xs text-slate-300">{ord.shopName}</span>
-                      </div>
-                      <div className="flex gap-1">
-                        <button
-                          onClick={() => updatePaymentStatus(ord.id, 'Fully Paid', ord.netAmount)}
-                          className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-2 py-1 rounded font-bold"
-                        >
-                          Paid
-                        </button>
-                        <button
-                          onClick={() => updatePaymentStatus(ord.id, 'Partially Paid', ord.netAmount / 2)}
-                          className="bg-amber-600 hover:bg-amber-500 text-slate-950 text-xs px-2 py-1 rounded font-bold"
-                        >
-                          Half
-                        </button>
-                        <button
-                          onClick={() => updatePaymentStatus(ord.id, 'Unpaid', 0)}
-                          className="bg-rose-600 hover:bg-rose-500 text-white text-xs px-2 py-1 rounded font-bold"
-                        >
-                          Unpaid
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Sidebar Info */}
-          <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg flex flex-col justify-between">
-            <div>
-              <h2 className="text-lg font-bold text-amber-400 mb-3 flex items-center gap-2">
-                <Fuel className="w-5 h-5" /> Operations Info
-              </h2>
-              <p className="text-sm text-slate-300 mb-2">
-                Active Agency: <span className="font-bold text-amber-400">{activeAgency}</span>
-              </p>
-              <p className="text-xs text-slate-400 mb-4 font-mono">
-                User: {activeAgency === 'Anuradhapura' ? 'CG0388' : 'CG0392'}
-              </p>
-              <div className="bg-slate-900 p-4 rounded-xl border border-slate-700 mb-4">
-                <p className="text-xs text-slate-400">Business Owner</p>
-                <p className="text-sm font-bold text-white mt-0.5">Egodagedara Arjunal Nishantha Kumara</p>
-                <p className="text-xs text-amber-400 mt-2">SMS Alert Mobile: +94 78 198 0085</p>
-              </div>
-            </div>
-
-            <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-700 text-center">
-              <p className="text-xs text-slate-400">Email PDF -> Top-Right QR</p>
-              <p className="text-xs text-emerald-400 font-semibold mt-1">● Ready to Upload & Print</p>
-            </div>
-          </div>
-        </main>
-      </div>
-    </div>
-  );
-}
+                {uploadedBills.length > 0
