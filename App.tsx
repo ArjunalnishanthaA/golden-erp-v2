@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { 
-  Fuel, 
-  Wallet, 
+import * as pdfjsLib from 'pdfjs-dist';
+import {
+  Fuel,
+  Wallet,
   QrCode,
   Scan,
   Clock,
@@ -10,8 +11,13 @@ import {
   Calendar as CalendarIcon,
   Printer,
   X,
-  RotateCcw
+  RotateCcw,
+  FileUp,
+  FileText
 } from 'lucide-react';
+
+// Configure PDF.js worker for browser rendering
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
 
 interface WholesaleOrder {
   id: string;
@@ -27,9 +33,17 @@ interface WholesaleOrder {
   paidAmount: number;
 }
 
+interface PdfStampedPage {
+  pageNumber: number;
+  imageUrl: string;
+  invoiceNo: string;
+  shopName: string;
+  amount: string;
+  paymentStatus: 'Unpaid' | 'Partially Paid' | 'Fully Paid';
+}
+
 const STORAGE_KEY = 'golden_distributors_erp_orders_v1';
 
-// Helper to get local date string YYYY-MM-DD without UTC timezone shift
 const getLocalDateString = (offsetDays = 0): string => {
   const d = new Date();
   d.setDate(d.getDate() + offsetDays);
@@ -44,6 +58,32 @@ export default function App() {
   const yesterdayStr = getLocalDateString(-1);
 
   const getDefaultOrders = (): WholesaleOrder[] => [
+    {
+      id: 'CG0392DSI034516',
+      agency: 'Mihintale',
+      shopName: 'Saliyapura Farm Shop - R187-000143',
+      category: 'Wholesale',
+      totalAmount: 3625,
+      discountPercentage: 0,
+      netAmount: 3625,
+      date: todayStr,
+      status: 'Dispatched',
+      paymentStatus: 'Unpaid',
+      paidAmount: 0
+    },
+    {
+      id: 'CG0392DSI034515',
+      agency: 'Mihintale',
+      shopName: 'Govijana Stores - CUS25722',
+      category: 'Wholesale',
+      totalAmount: 1924.75,
+      discountPercentage: 0,
+      netAmount: 1924.75,
+      date: yesterdayStr,
+      status: 'Dispatched',
+      paymentStatus: 'Partially Paid',
+      paidAmount: 1000
+    },
     {
       id: 'ORD-3881',
       agency: 'Anuradhapura',
@@ -69,40 +109,21 @@ export default function App() {
       status: 'Dispatched',
       paymentStatus: 'Fully Paid',
       paidAmount: 74800
-    },
-    {
-      id: 'ORD-3921',
-      agency: 'Mihintale',
-      shopName: 'Mihintale Traders (Route 1)',
-      category: 'Wholesale',
-      totalAmount: 90000,
-      discountPercentage: 15,
-      netAmount: 76500,
-      date: todayStr,
-      status: 'Dispatched',
-      paymentStatus: 'Partially Paid',
-      paidAmount: 38000
-    },
-    {
-      id: 'ORD-3920',
-      agency: 'Mihintale',
-      shopName: 'Rajarata Food City (Route 2)',
-      category: 'Supermarket',
-      totalAmount: 120000,
-      discountPercentage: 25,
-      netAmount: 90000,
-      date: yesterdayStr,
-      status: 'Dispatched',
-      paymentStatus: 'Unpaid',
-      paidAmount: 0
     }
   ];
 
-  const [activeAgency, setActiveAgency] = useState<'Anuradhapura' | 'Mihintale'>('Anuradhapura');
-  const [activeTab, setActiveTab] = useState<'orders' | 'credits' | 'scanner'>('orders');
+  const [activeAgency, setActiveAgency] = useState<'Anuradhapura' | 'Mihintale'>('Mihintale');
+  const [activeTab, setActiveTab] = useState<'orders' | 'pdf' | 'credits' | 'scanner'>('pdf');
   const [selectedDate, setSelectedDate] = useState<string>('ALL');
   const [isSyncing, setIsSyncing] = useState(false);
   const [billToPrint, setBillToPrint] = useState<WholesaleOrder | null>(null);
+
+  // PDF QR Stamper States
+  const [pdfFileName, setPdfFileName] = useState<string>('');
+  const [pdfPages, setPdfPages] = useState<PdfStampedPage[]>([]);
+  const [isProcessingPdf, setIsProcessingPdf] = useState(false);
+  const [printAllPdfPages, setPrintAllPdfPages] = useState(false);
+  const [singlePdfPageToPrint, setSinglePdfPageToPrint] = useState<PdfStampedPage | null>(null);
 
   const [orders, setOrders] = useState<WholesaleOrder[]>(() => {
     try {
@@ -133,14 +154,118 @@ export default function App() {
   const [scanningActive, setScanningActive] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
+  const getQrPayloadFromValues = (
+    invoiceNo: string,
+    agency: 'Anuradhapura' | 'Mihintale',
+    dateStr: string,
+    amount: string | number,
+    status: string
+  ) => {
+    const agencyCode = agency === 'Anuradhapura' ? 'CG0388' : 'CG0392';
+    return `${invoiceNo}|${agencyCode}|${dateStr}|${amount}|${status}`;
+  };
+
+  const getQrImageUrlFromPayload = (payload: string, size = 160) => {
+    return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&margin=4&data=${encodeURIComponent(payload)}`;
+  };
+
   const getQrPayload = (ord: WholesaleOrder) => {
-    const agencyCode = ord.agency === 'Anuradhapura' ? 'CG0388' : 'CG0392';
-    return `${ord.id}|${agencyCode}|${ord.date}|${ord.netAmount}|${ord.paymentStatus}`;
+    return getQrPayloadFromValues(ord.id, ord.agency, ord.date, ord.netAmount, ord.paymentStatus);
   };
 
   const getQrImageUrl = (ord: WholesaleOrder) => {
-    const data = encodeURIComponent(getQrPayload(ord));
-    return `https://api.qrserver.com/v1/create-qr-code/?size=160x160&margin=4&data=${data}`;
+    return getQrImageUrlFromPayload(getQrPayload(ord), 160);
+  };
+
+  // Handle PDF Upload & Extract Pages + Invoice Numbers
+  const handlePdfUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsProcessingPdf(true);
+    setPdfFileName(file.name);
+    setPdfPages([]);
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const extractedPages: PdfStampedPage[] = [];
+
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        const page = await pdf.getPage(pageNum);
+        const viewport = page.getViewport({ scale: 1.5 });
+
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+
+        if (context) {
+          await page.render({ canvasContext: context, viewport }).promise;
+        }
+
+        // Try extracting text to find Invoice No (e.g., CG0392DSI... or CG0388DSI...)
+        let detectedInvoice = `PAGE-${pageNum}`;
+        try {
+          const textContent = await page.getTextContent();
+          const fullText = textContent.items
+            .map((item: any) => ('str' in item ? item.str : ''))
+            .join(' ');
+          const match = fullText.match(/CG\d{4}[A-Z0-9]+/i);
+          if (match) {
+            detectedInvoice = match[0].toUpperCase();
+          }
+        } catch {
+          // Fallback if text extraction isn't available
+        }
+
+        extractedPages.push({
+          pageNumber: pageNum,
+          imageUrl: canvas.toDataURL('image/jpeg', 0.85),
+          invoiceNo: detectedInvoice,
+          shopName: '',
+          amount: '',
+          paymentStatus: 'Unpaid'
+        });
+      }
+
+      setPdfPages(extractedPages);
+    } catch (err) {
+      console.error('Error reading PDF:', err);
+      alert('⚠️ PDF ෆයිල් එක කියවීමට නොහැකි විය. වෙනත් PDF එකක් උත්සාහ කරන්න.');
+    } finally {
+      setIsProcessingPdf(false);
+    }
+  };
+
+  const updatePdfPageField = (
+    pageNumber: number,
+    field: 'invoiceNo' | 'shopName' | 'amount' | 'paymentStatus',
+    value: string
+  ) => {
+    setPdfPages(prev =>
+      prev.map(p => (p.pageNumber === pageNumber ? { ...p, [field]: value } : p))
+    );
+  };
+
+  const savePdfPageToOrders = (pg: PdfStampedPage) => {
+    const parsedAmount = parseFloat(pg.amount) || 0;
+    const newOrd: WholesaleOrder = {
+      id: pg.invoiceNo.trim() || `INV-P${pg.pageNumber}`,
+      agency: activeAgency,
+      shopName: pg.shopName.trim() || `PDF Bill Page ${pg.pageNumber}`,
+      category: 'Wholesale',
+      totalAmount: parsedAmount,
+      discountPercentage: 0,
+      netAmount: parsedAmount,
+      date: selectedDate === 'ALL' ? todayStr : selectedDate,
+      status: 'Dispatched',
+      paymentStatus: pg.paymentStatus,
+      paidAmount: pg.paymentStatus === 'Fully Paid' ? parsedAmount : 0
+    };
+
+    setOrders(prev => [newOrd, ...prev]);
+    alert(`✅ ${newOrd.id} බිල Orders & Credit Bills ලැයිස්තුවට එක් කරන ලදී.`);
   };
 
   const handleSyncFreelan = () => {
@@ -149,25 +274,8 @@ export default function App() {
       setIsSyncing(false);
       const username = activeAgency === 'Anuradhapura' ? 'CG0388' : 'CG0392';
       const syncDateLabel = selectedDate === 'ALL' ? todayStr : selectedDate;
-
-      const syncedBill: WholesaleOrder = {
-        id: `SFA-${Math.floor(1000 + Math.random() * 9000)}`,
-        agency: activeAgency,
-        shopName: `${activeAgency} Synced Customer (${syncDateLabel})`,
-        category: 'Wholesale',
-        totalAmount: 65000,
-        discountPercentage: 10,
-        netAmount: 58500,
-        date: syncDateLabel,
-        status: 'Dispatched',
-        paymentStatus: 'Unpaid',
-        paidAmount: 0
-      };
-
-      setOrders(prev => [syncedBill, ...prev]);
-
-      alert(`✅ Freelan SFA Sync සාර්ථකයි!\nAgency: ${activeAgency} (${username})\nදිනය: ${syncDateLabel}\nඅලුත් බිල්පතක් පද්ධතියට එක් විය.`);
-    }, 1000);
+      alert(`✅ Freelan SFA Sync තත්ත්වය:\nAgency: ${activeAgency} (${username})\nදිනය: ${syncDateLabel}\nPDF Invoices Upload කර Top-Right QR සමඟ Print කිරීමට "PDF QR Stamper" ටැබ් එක භාවිත කරන්න.`);
+    }, 800);
   };
 
   const handleResetSampleData = () => {
@@ -253,6 +361,8 @@ export default function App() {
     return matchesAgency && matchesDate;
   });
 
+  const activeDateForQr = selectedDate === 'ALL' ? todayStr : selectedDate;
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 font-sans p-4 md:p-6">
       <style>{`
@@ -274,12 +384,20 @@ export default function App() {
             border: none !important;
             background: #ffffff !important;
             color: #000000 !important;
-            padding: 12px !important;
+            padding: 8px !important;
+          }
+          .pdf-print-page {
+            page-break-after: always;
+            break-after: page;
+          }
+          .pdf-print-page:last-child {
+            page-break-after: auto;
+            break-after: auto;
           }
         }
       `}</style>
 
-      {/* Printable Bill Modal / Sheet (QR Code positioned on Top-Right of the bill) */}
+      {/* Single Order Print Modal (QR Code on Top-Right) */}
       {billToPrint && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
           <div className="print-only-sheet bg-white text-slate-900 w-full max-w-xl rounded-2xl p-6 shadow-2xl border border-slate-300">
@@ -313,7 +431,7 @@ export default function App() {
                   Freelan SFA Linked | {billToPrint.agency} ({billToPrint.agency === 'Anuradhapura' ? 'CG0388' : 'CG0392'})
                 </p>
                 <div className="mt-3 text-xs space-y-1 text-slate-800">
-                  <p><span className="font-bold">Bill No:</span> <span className="font-mono">{billToPrint.id}</span></p>
+                  <p><span className="font-bold">Bill / Invoice No:</span> <span className="font-mono">{billToPrint.id}</span></p>
                   <p><span className="font-bold">Date:</span> {billToPrint.date}</p>
                   <p><span className="font-bold">Customer / Shop:</span> {billToPrint.shopName}</p>
                 </div>
@@ -356,6 +474,72 @@ export default function App() {
         </div>
       )}
 
+      {/* Uploaded PDF Single/All Pages Print Preview Modal (QR on Top-Right of each page) */}
+      {(singlePdfPageToPrint || printAllPdfPages) && (
+        <div className="fixed inset-0 z-50 bg-black/85 overflow-y-auto p-4">
+          <div className="print-only-sheet max-w-3xl mx-auto bg-white text-slate-900 rounded-2xl p-4 md:p-6 shadow-2xl">
+            <div className="no-print flex justify-between items-center pb-4 mb-4 border-b border-slate-200">
+              <span className="text-sm font-bold text-slate-800">
+                {printAllPdfPages
+                  ? `All ${pdfPages.length} PDF Pages Preview (Top-Right QR)`
+                  : `Page ${singlePdfPageToPrint?.pageNumber} Preview (Top-Right QR)`}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={triggerBrowserPrint}
+                  className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-1.5 rounded-lg text-xs flex items-center gap-1.5"
+                >
+                  <Printer className="w-4 h-4" /> Print Now
+                </button>
+                <button
+                  onClick={() => {
+                    setSinglePdfPageToPrint(null);
+                    setPrintAllPdfPages(false);
+                  }}
+                  className="bg-slate-200 hover:bg-slate-300 text-slate-800 p-1.5 rounded-lg"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {(printAllPdfPages ? pdfPages : singlePdfPageToPrint ? [singlePdfPageToPrint] : []).map(pg => {
+              const payload = getQrPayloadFromValues(
+                pg.invoiceNo,
+                activeAgency,
+                activeDateForQr,
+                pg.amount || '0',
+                pg.paymentStatus
+              );
+              return (
+                <div
+                  key={pg.pageNumber}
+                  className="pdf-print-page relative border border-slate-300 rounded-lg overflow-hidden bg-white mb-6"
+                >
+                  {/* Top-Right QR Code stamped over the top-right area of the uploaded bill page */}
+                  <div className="absolute top-3 right-3 z-10 bg-white border-2 border-slate-900 rounded-lg p-1.5 shadow flex flex-col items-center">
+                    <img
+                      src={getQrImageUrlFromPayload(payload, 140)}
+                      alt={`QR for ${pg.invoiceNo}`}
+                      className="w-24 h-24 object-contain"
+                    />
+                    <span className="text-[10px] font-mono font-bold text-slate-900 mt-0.5">
+                      {pg.invoiceNo}
+                    </span>
+                  </div>
+
+                  <img
+                    src={pg.imageUrl}
+                    alt={`Bill Page ${pg.pageNumber}`}
+                    className="w-full h-auto block"
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Main ERP Interface */}
       <div className="no-print">
         <header className="max-w-6xl mx-auto bg-slate-800 border border-slate-700 rounded-2xl p-4 md:p-6 mb-6 shadow-xl flex flex-col md:flex-row justify-between items-center gap-4">
@@ -386,7 +570,7 @@ export default function App() {
           </div>
         </header>
 
-        {/* Date Filter & History Bar */}
+        {/* Date Filter Bar */}
         <div className="max-w-6xl mx-auto bg-slate-800 border border-slate-700 rounded-xl p-4 mb-4 flex flex-col sm:flex-row justify-between items-center gap-3 shadow-md">
           <div className="flex items-center gap-2">
             <CalendarIcon className="w-5 h-5 text-amber-400" />
@@ -441,7 +625,6 @@ export default function App() {
             <button
               onClick={handleResetSampleData}
               className="bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold px-3 py-2 rounded-lg text-xs flex items-center gap-1.5 transition-all"
-              title="Reset sample data"
             >
               <RotateCcw className="w-3.5 h-3.5" /> Reset
             </button>
@@ -451,13 +634,21 @@ export default function App() {
               className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded-lg text-xs flex items-center gap-2 transition-all shadow"
             >
               <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
-              {isSyncing ? 'Syncing Bills...' : `Sync ${activeAgency} Bills`}
+              {isSyncing ? 'Syncing...' : `Sync ${activeAgency}`}
             </button>
           </div>
         </div>
 
         {/* Navigation Tabs */}
         <div className="max-w-6xl mx-auto flex gap-3 mb-6 overflow-x-auto pb-2">
+          <button
+            onClick={() => { stopCamera(); setActiveTab('pdf'); }}
+            className={`px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all ${
+              activeTab === 'pdf' ? 'bg-amber-500 text-slate-950 shadow-lg' : 'bg-slate-800 text-slate-300 border border-slate-700'
+            }`}
+          >
+            <FileUp className="w-4 h-4" /> PDF QR Stamper ({pdfPages.length})
+          </button>
           <button
             onClick={() => { stopCamera(); setActiveTab('orders'); }}
             className={`px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-2 transition-all ${
@@ -486,6 +677,141 @@ export default function App() {
 
         <main className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="md:col-span-2 space-y-6">
+
+            {/* PDF Upload & Top-Right QR Stamper Tab */}
+            {activeTab === 'pdf' && (
+              <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg space-y-5">
+                <div>
+                  <h2 className="text-lg font-bold text-amber-400 flex items-center gap-2">
+                    <FileUp className="w-5 h-5" /> Upload SFA Invoice PDF & Stamp Top-Right QR
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Freelan SFA එකෙන් Invoice convert කළාම එන PDF එක (බිල් 20ක් තිබුණත්) මෙතැනින් Upload කර, එක් එක් බිලේ ඉහළ දකුණු පැත්තේ QR කෝඩ් එක සමඟ නැවත Print කරන්න.
+                  </p>
+                </div>
+
+                <label className="flex flex-col items-center justify-center border-2 border-dashed border-amber-500/60 hover:border-amber-400 bg-slate-900/60 rounded-xl p-6 cursor-pointer transition-all">
+                  <FileText className="w-10 h-10 text-amber-400 mb-2" />
+                  <span className="text-sm font-bold text-white">
+                    {pdfFileName ? `Selected: ${pdfFileName}` : 'Tap to Upload Invoice PDF File'}
+                  </span>
+                  <span className="text-xs text-slate-400 mt-1">PDF files only (Supports multi-page bills)</span>
+                  <input
+                    type="file"
+                    accept="application/pdf"
+                    onChange={handlePdfUpload}
+                    className="hidden"
+                  />
+                </label>
+
+                {isProcessingPdf && (
+                  <div className="text-center py-6 text-amber-400 text-sm font-semibold">
+                    PDF පිටු කියවමින් QR සකස් කරමින් පවතී...
+                  </div>
+                )}
+
+                {pdfPages.length > 0 && (
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap justify-between items-center gap-2 bg-slate-900 p-3 rounded-xl border border-slate-700">
+                      <span className="text-xs font-bold text-emerald-400">
+                        {pdfPages.length} Bills / Pages Ready
+                      </span>
+                      <button
+                        onClick={() => setPrintAllPdfPages(true)}
+                        className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3.5 py-1.5 rounded-lg text-xs flex items-center gap-1.5"
+                      >
+                        <Printer className="w-4 h-4" /> Print All {pdfPages.length} Pages (Top-Right QR)
+                      </button>
+                    </div>
+
+                    {pdfPages.map(pg => {
+                      const payload = getQrPayloadFromValues(
+                        pg.invoiceNo,
+                        activeAgency,
+                        activeDateForQr,
+                        pg.amount || '0',
+                        pg.paymentStatus
+                      );
+                      return (
+                        <div
+                          key={pg.pageNumber}
+                          className="bg-slate-900 border border-slate-700 rounded-xl p-4 space-y-3"
+                        >
+                          <div className="flex justify-between items-start gap-3">
+                            <div className="flex-1 space-y-2">
+                              <div className="text-xs font-bold text-amber-400">
+                                Page {pg.pageNumber} / {pdfPages.length}
+                              </div>
+                              <input
+                                type="text"
+                                placeholder="Invoice No (e.g. CG0392DSI034516)"
+                                value={pg.invoiceNo}
+                                onChange={(e) => updatePdfPageField(pg.pageNumber, 'invoiceNo', e.target.value)}
+                                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white"
+                              />
+                              <input
+                                type="text"
+                                placeholder="Shop Name (Optional)"
+                                value={pg.shopName}
+                                onChange={(e) => updatePdfPageField(pg.pageNumber, 'shopName', e.target.value)}
+                                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                              />
+                              <div className="grid grid-cols-2 gap-2">
+                                <input
+                                  type="number"
+                                  placeholder="Total Value (LKR)"
+                                  value={pg.amount}
+                                  onChange={(e) => updatePdfPageField(pg.pageNumber, 'amount', e.target.value)}
+                                  className="bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                                />
+                                <select
+                                  value={pg.paymentStatus}
+                                  onChange={(e) => updatePdfPageField(pg.pageNumber, 'paymentStatus', e.target.value)}
+                                  className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white"
+                                >
+                                  <option value="Unpaid">Unpaid</option>
+                                  <option value="Partially Paid">Partially Paid</option>
+                                  <option value="Fully Paid">Fully Paid</option>
+                                </select>
+                              </div>
+                            </div>
+
+                            {/* Top-Right QR Preview */}
+                            <div className="bg-white p-1.5 rounded-lg border border-slate-400 flex flex-col items-center shrink-0">
+                              <img
+                                src={getQrImageUrlFromPayload(payload, 120)}
+                                alt={`QR ${pg.invoiceNo}`}
+                                className="w-20 h-20 object-contain"
+                              />
+                              <span className="text-[9px] font-mono font-bold text-slate-900 mt-0.5">
+                                Top-Right QR
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+                            <button
+                              onClick={() => savePdfPageToOrders(pg)}
+                              className="bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold px-3 py-1.5 rounded-lg text-xs"
+                            >
+                              Save to Credit List
+                            </button>
+                            <button
+                              onClick={() => setSinglePdfPageToPrint(pg)}
+                              className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3.5 py-1.5 rounded-lg text-xs flex items-center gap-1"
+                            >
+                              <Printer className="w-3.5 h-3.5" /> Preview & Print Page
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Orders & QR Invoices Tab */}
             {activeTab === 'orders' && (
               <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg">
                 <h2 className="text-lg font-bold text-amber-400 mb-4 flex items-center gap-2">
@@ -526,10 +852,10 @@ export default function App() {
                   <table className="w-full text-left text-sm">
                     <thead className="bg-slate-900 text-slate-400 border-b border-slate-700">
                       <tr>
-                        <th className="p-3">Order / Date</th>
+                        <th className="p-3">Invoice / Date</th>
                         <th className="p-3">Shop Name</th>
                         <th className="p-3">Net Amount</th>
-                        <th className="p-3">Payment Status</th>
+                        <th className="p-3">Status</th>
                         <th className="p-3">Action</th>
                       </tr>
                     </thead>
@@ -537,7 +863,7 @@ export default function App() {
                       {filteredOrders.length === 0 ? (
                         <tr>
                           <td colSpan={5} className="p-6 text-center text-slate-400 text-xs">
-                            තෝරාගත් දිනයට අදාළ බිල්පත් කිසිවක් හමු නොවීය. ඉහත "Sync Bills" බොත්තම ඔබා බලන්න.
+                            තෝරාගත් දිනයට අදාළ බිල්පත් කිසිවක් හමු නොවීය.
                           </td>
                         </tr>
                       ) : (
@@ -577,43 +903,40 @@ export default function App() {
               </div>
             )}
 
+            {/* Credit Bills Manager Tab */}
             {activeTab === 'credits' && (
               <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg">
                 <h2 className="text-lg font-bold text-amber-400 mb-4 flex items-center gap-2">
                   <Clock className="w-5 h-5" /> {activeAgency} Credit Bill Manager
                 </h2>
-                <p className="text-xs text-slate-400 mb-4">
-                  තෝරාගත් දිනයට අදාළ ණය බිල්පත් ගෙවීම් තත්ත්වය පරීක්ෂා කරන්න.
-                </p>
 
                 <div className="space-y-3">
                   {filteredOrders.map(ord => (
                     <div key={ord.id} className="bg-slate-900 p-4 rounded-xl border border-slate-700 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                       <div>
                         <p className="font-bold text-white text-sm">{ord.shopName} <span className="text-xs text-amber-400 font-mono">({ord.id})</span></p>
-                        <p className="text-xs text-slate-400 mt-1">Date: {ord.date} | Total Net: LKR {ord.netAmount.toLocaleString()} | Paid: LKR {ord.paidAmount.toLocaleString()}</p>
+                        <p className="text-xs text-slate-400 mt-1">Date: {ord.date} | Net: LKR {ord.netAmount.toLocaleString()} | Paid: LKR {ord.paidAmount.toLocaleString()}</p>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className={`text-xs px-3 py-1 rounded-full font-bold ${
-                          ord.paymentStatus === 'Fully Paid' ? 'bg-emerald-500/20 text-emerald-400' :
-                          ord.paymentStatus === 'Partially Paid' ? 'bg-amber-500/20 text-amber-400' :
-                          'bg-rose-500/20 text-rose-400'
-                        }`}>
-                          {ord.paymentStatus}
-                        </span>
-                      </div>
+                      <span className={`text-xs px-3 py-1 rounded-full font-bold ${
+                        ord.paymentStatus === 'Fully Paid' ? 'bg-emerald-500/20 text-emerald-400' :
+                        ord.paymentStatus === 'Partially Paid' ? 'bg-amber-500/20 text-amber-400' :
+                        'bg-rose-500/20 text-rose-400'
+                      }`}>
+                        {ord.paymentStatus}
+                      </span>
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
+            {/* Live Camera QR Scanner Tab */}
             {activeTab === 'scanner' && (
               <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg text-center py-8">
                 <Camera className="w-16 h-16 text-amber-400 mx-auto mb-4" />
                 <h2 className="text-xl font-bold text-amber-400 mb-2">Live Camera QR Bill Scanner</h2>
                 <p className="text-sm text-slate-300 max-w-md mx-auto mb-6">
-                  ඔබේ ජංගම දුරකථන කැමරාව සක්‍රීය කර බිල්පතේ ඇති QR කෝඩ් එක ස්කෑන් කරන්න.
+                  හවසට බිල්වල ඉහළ දකුණු පැත්තේ තියෙන QR කෝඩ් එක ස්කෑන් කර Paid / Half / Unpaid තත්ත්වය යාවත්කාලීන කරන්න.
                 </p>
 
                 {!scanningActive ? (
@@ -675,4 +998,32 @@ export default function App() {
             )}
           </div>
 
-          <div className="
+          {/* Sidebar Info */}
+          <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-lg flex flex-col justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-amber-400 mb-3 flex items-center gap-2">
+                <Fuel className="w-5 h-5" /> Operations Info
+              </h2>
+              <p className="text-sm text-slate-300 mb-2">
+                Active Agency: <span className="font-bold text-amber-400">{activeAgency}</span>
+              </p>
+              <p className="text-xs text-slate-400 mb-4 font-mono">
+                User: {activeAgency === 'Anuradhapura' ? 'CG0388' : 'CG0392'}
+              </p>
+              <div className="bg-slate-900 p-4 rounded-xl border border-slate-700 mb-4">
+                <p className="text-xs text-slate-400">Business Owner</p>
+                <p className="text-sm font-bold text-white mt-0.5">Egodagedara Arjunal Nishantha Kumara</p>
+                <p className="text-xs text-amber-400 mt-2">SMS Alert Mobile: +94 78 198 0085</p>
+              </div>
+            </div>
+
+            <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-700 text-center">
+              <p className="text-xs text-slate-400">PDF Top-Right QR Stamper</p>
+              <p className="text-xs text-emerald-400 font-semibold mt-1">● Ready for Multi-Page PDF</p>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
